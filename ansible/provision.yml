@@ -1,0 +1,10 @@
+---
+- name: Provisionner Docker, Jenkins et Minikube localement
+  hosts: devops_servers
+  become: true
+  vars_files:
+    - vars/vault.yml
+  roles:
+    - docker
+    - jenkins
+    - minikube
