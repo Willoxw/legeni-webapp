@@ -52,10 +52,16 @@ de ce credential et au propriétaire de l'image `legeni-webapp`.
 
 ## Configuration Multibranch
 
-Créer dans Jenkins un item **Multibranch Pipeline** avec la source GitHub
+L'item Jenkins `legeni-webapp-mb` est configuré avec la source GitHub
 `Willoxw/legeni-webapp`, credential `github-api`, découverte des branches et
-des PR d'origine, et `Jenkinsfile` comme Script Path. Un scan périodique
-(par exemple toutes les cinq minutes) sert de repli au webhook.
+des PR (les PR de fork ne sont exécutées que pour les contributeurs de
+confiance), et `Jenkinsfile` comme Script Path. Un scan périodique toutes les
+cinq minutes sert de repli au webhook. L'URL Jenkins est configurée pour
+l'accès local sur `http://localhost:8080/`.
+
+La PR #7 a passé les statuts `continuous-integration/jenkins/branch` et
+`continuous-integration/jenkins/pr-merge`. La protection GitHub de `main`
+exige maintenant le second statut, en plus de la PR obligatoire.
 
 Pour le déclenchement instantané, il faut une URL Jenkins joignable depuis
 GitHub et un webhook `push`/`pull_request`. Le Jenkins local est derrière WSL;
@@ -74,6 +80,8 @@ mais aucun statut Jenkins n'est encore requis.
 - Docker : image locale `legeni-webapp:1.0.0-ci` construite.
 - Trivy : **0 HIGH, 0 CRITICAL** pour cette image.
 - Jenkins Pipeline Model Converter : Jenkinsfile valide.
+- Jenkins Multibranch, build de branche et build de PR : succès; publication et
+  déploiements correctement ignorés pour la PR.
 - Ansible : syntax-check de `deploy.yml` réussi.
 - Staging : Redis `1/1`, web `2/2`, Ingress et PVC Redis disponibles; smoke
   test avec la version `1.0.0-ci` réussi.
@@ -86,12 +94,14 @@ mais aucun statut Jenkins n'est encore requis.
 ## Actions restantes avant la démonstration complète
 
 1. Ajouter `registry-credentials` avec un access token Docker Hub en écriture.
-2. Créer/configurer le job Multibranch et exécuter un build de PR. Le push
-   Docker, les déploiements staging et production n'ont pas encore été exécutés
-   par Jenkins, faute de credential de registre.
+2. Le build initial de `main` avec l'ancien Jenkinsfile a échoué à l'étape
+   Docker Hub, car son ancien credential `dockerhub` n'existait pas. Avec le
+   nouveau pipeline, le push et les déploiements n'ont pas encore été exécutés
+   par Jenkins, faute de `registry-credentials`.
 3. Fournir un endpoint public et le scope GitHub `admin:repo_hook` pour activer
    le webhook; sinon, conserver le scan périodique.
-4. Rendre le statut Jenkins réussi obligatoire avant le merge de `main`.
+4. Ajouter le credential Docker Hub, puis fusionner la PR #7 après le build
+   vert; l'approbation Jenkins restera obligatoire pour la production.
 5. Si souhaité, ajouter un credential de notification Discord.
 6. Vérifier staging, puis approuver explicitement le déploiement de production
    dans Jenkins.
