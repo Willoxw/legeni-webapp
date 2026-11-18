@@ -28,7 +28,6 @@
       - status
       - --profile
       - "{{ minikube_profile }}"
-      - "{% raw %}--format={{.Host}},{{.Kubelet}},{{.APIServer}},{{.Kubeconfig}}{% endraw %}"
   register: minikube_status
   changed_when: false
   failed_when: false
@@ -41,9 +40,11 @@
       - minikube
       - start
       - --driver=docker
+      - --cpus=2
+      - --memory=3072mb
       - --profile
       - "{{ minikube_profile }}"
-  when: "'Running,Running,Running' not in minikube_status.stdout"
+  when: "'apiserver: Running' not in minikube_status.stdout"
   become: true
   become_user: "{{ minikube_user }}"
 
@@ -54,7 +55,7 @@
       - update-context
       - --profile
       - "{{ minikube_profile }}"
-  when: "'Configured' not in minikube_status.stdout"
+  when: "'kubeconfig: Configured' not in minikube_status.stdout"
   changed_when: false
   become: true
   become_user: "{{ minikube_user }}"
