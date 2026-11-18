@@ -1,8 +1,11 @@
 .git
 .venv
+.venv-tests
+.venv-flake8
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
 reports/
 Jenkinsfile
 docker-compose*.yml

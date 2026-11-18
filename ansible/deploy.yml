@@ -1,0 +1,228 @@
+---
+- name: Déployer Legeni WebApp sur Kubernetes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    target_env: staging
+    app_image: legeni07/legeni-webapp
+    app_version: "{{ lookup('ansible.builtin.file', playbook_dir + '/../VERSION') | trim }}"
+    deployment_rollout_timeout: 180s
+    k8s_namespace: "legeni-{{ target_env }}"
+    app_env: "{{ target_env }}"
+
+  vars_files:
+    - vars/vault.yml
+
+  pre_tasks:
+    - name: Valider l'environnement cible
+      ansible.builtin.assert:
+        that:
+          - target_env in ['staging', 'prod']
+          - app_image | length > 0
+          - app_version | length > 0
+        fail_msg: "target_env doit être staging ou prod; app_image et app_version sont obligatoires."
+
+    - name: Charger la configuration de l'environnement
+      ansible.builtin.include_vars:
+        file: "vars/{{ target_env }}.yml"
+
+    - name: Vérifier l'accès au cluster Kubernetes
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: cluster_nodes
+      changed_when: false
+
+    - name: Vérifier que le cluster possède un nœud prêt
+      ansible.builtin.assert:
+        that:
+          - cluster_nodes.resources | length > 0
+          - cluster_nodes.resources | selectattr('status.conditions', 'defined') | length > 0
+        fail_msg: "Aucun nœud Kubernetes accessible."
+
+    - name: Vérifier si le Deployment webapp existe déjà
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: webapp
+        namespace: "{{ k8s_namespace }}"
+      register: previous_webapp
+      changed_when: false
+
+    - name: Mémoriser la version actuellement déployée
+      ansible.builtin.set_fact:
+        previous_app_version: >-
+          {{
+            (
+              previous_webapp.resources[0].spec.template.spec.containers[0].env
+              | default([])
+              | selectattr('name', 'equalto', 'APP_VERSION')
+              | map(attribute='value')
+              | first
+            )
+            | default(
+                previous_webapp.resources[0].spec.template.spec.containers[0].image.split(':')[-1],
+                true
+              )
+          }}
+      changed_when: false
+      when: previous_webapp.resources | length > 0
+
+  tasks:
+    - name: Créer le namespace cible
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ k8s_namespace }}"
+            labels:
+              env: "{{ app_env }}"
+
+    - name: Créer le secret Redis
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: redis-secret
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            REDIS_PASSWORD: "{{ vault_redis_password }}"
+      no_log: true
+
+    - name: Déployer la configuration Redis et de l'application
+      kubernetes.core.k8s:
+        state: present
+        template:
+          - path: templates/k8s/configmap.yml.j2
+          - path: templates/k8s/redis.yml.j2
+
+    - name: Attendre que Redis soit disponible
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - statefulset/redis
+          - "--namespace={{ k8s_namespace }}"
+          - "--timeout={{ deployment_rollout_timeout }}"
+      changed_when: false
+
+    - name: Déployer l'application et son exposition Ingress
+      block:
+        - name: Appliquer le Deployment, le Service et l'Ingress
+          kubernetes.core.k8s:
+            state: present
+            template: templates/k8s/webapp.yml.j2
+
+        - name: Attendre la fin du rolling update
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - rollout
+              - status
+              - deployment/webapp
+              - "--namespace={{ k8s_namespace }}"
+              - "--timeout={{ deployment_rollout_timeout }}"
+          changed_when: false
+
+        - name: Lire les pods webapp prêts pour le smoke test
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ k8s_namespace }}"
+            label_selectors:
+              - app=webapp
+          register: webapp_pods
+          changed_when: false
+
+        - name: Vérifier que le Deployment possède un pod
+          ansible.builtin.assert:
+            that:
+              - webapp_pods.resources | length > 0
+            fail_msg: "Aucun pod webapp disponible pour le smoke test."
+
+        - name: Vérifier la version via le Service Kubernetes
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - exec
+              - "--namespace={{ k8s_namespace }}"
+              - "{{ webapp_pods.resources[0].metadata.name }}"
+              - --
+              - python
+              - -c
+              - >-
+                import json, urllib.request;
+                data = json.load(urllib.request.urlopen('http://webapp/api/info', timeout=10));
+                assert data['version'] == '{{ app_version }}', data;
+                print(data)
+          register: smoke_test
+          changed_when: false
+
+        - name: Afficher le résultat du smoke test
+          ansible.builtin.debug:
+            msg: "{{ app_env }} OK : {{ smoke_test.stdout | trim }}"
+
+      rescue:
+        - name: Revenir au Deployment précédent
+          kubernetes.core.k8s_rollback:
+            api_version: apps/v1
+            kind: Deployment
+            name: webapp
+            namespace: "{{ k8s_namespace }}"
+          when: previous_webapp.resources | length > 0
+
+        - name: Attendre que la version précédente soit de nouveau disponible
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - rollout
+              - status
+              - deployment/webapp
+              - "--namespace={{ k8s_namespace }}"
+              - "--timeout={{ deployment_rollout_timeout }}"
+          changed_when: false
+          when: previous_webapp.resources | length > 0
+
+        - name: Lire les pods webapp après le rollback
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ k8s_namespace }}"
+            label_selectors:
+              - app=webapp
+          register: rolled_back_pods
+          changed_when: false
+          when: previous_webapp.resources | length > 0
+
+        - name: Vérifier la version restaurée par le rollback
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - exec
+              - "--namespace={{ k8s_namespace }}"
+              - "{{ rolled_back_pods.resources[0].metadata.name }}"
+              - --
+              - python
+              - -c
+              - >-
+                import json, urllib.request;
+                data = json.load(urllib.request.urlopen('http://webapp/api/info', timeout=10));
+                assert data['version'] == '{{ previous_app_version }}', data;
+                print(data)
+          changed_when: false
+          when: previous_webapp.resources | length > 0
+
+        - name: Signaler explicitement l'échec du déploiement
+          ansible.builtin.fail:
+            msg: >-
+              Déploiement {{ app_version }} en {{ app_env }} échoué.
+              Un rollback a été tenté si une version précédente existait.
