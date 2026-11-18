@@ -1,0 +1,9 @@
+---
+jenkins_image: legeni/jenkins
+jenkins_image_tag: lts
+jenkins_container_name: jenkins
+jenkins_admin_user: admin
+jenkins_http_port: 8080
+jenkins_agent_port: 50000
+jenkins_home_volume: jenkins_home
+jenkins_docker_socket: /var/run/docker.sock

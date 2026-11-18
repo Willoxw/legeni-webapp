@@ -1,0 +1,11 @@
+---
+kubectl_stable_version_url: https://dl.k8s.io/release/stable.txt
+minikube_binary_url: "https://storage.googleapis.com/minikube/releases/latest/minikube-linux-{{ minikube_architecture }}"
+minikube_architecture: "{{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}"
+minikube_profile: minikube
+minikube_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
+minikube_addons:
+  - metrics-server
+  - ingress
+minikube_docker_network: minikube
+minikube_jenkins_container: jenkins
